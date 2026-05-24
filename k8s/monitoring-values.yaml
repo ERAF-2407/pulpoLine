@@ -1,0 +1,14 @@
+grafana:
+  adminPassword: "admin"
+  service:
+    type: NodePort
+    nodePort: 32000
+
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    retention: 5d
+
+alertmanager:
+  enabled: true

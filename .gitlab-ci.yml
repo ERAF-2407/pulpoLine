@@ -1,0 +1,103 @@
+stages:
+  - security_and_lint
+  - test
+  - build_and_scan
+  - deploy
+  - notify
+
+variables:
+  AWS_DEFAULT_REGION: us-east-1
+  ECR_REGISTRY: 089659004332.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: api-backend-prod
+  AWS_ROLE_ARN: arn:aws:iam::089659004332:role/gitlab-ci-deploy-role
+
+default:
+  tags:
+    - mi-vps-runner
+
+bandit_sast:
+  stage: security_and_lint
+  image: python:3.11-slim
+  script:
+    - pip install bandit
+    - bandit -r app/ -ll
+
+pytest:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - cd app/
+    - pip install -r requirements.txt pytest httpx
+    - pytest test_main.py
+
+build_scan_push:
+  stage: build_and_scan
+  image: docker:24.0.5
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  script:
+    - apk add --no-cache aws-cli jq curl
+    - echo "Configurando OIDC para AWS..."
+    # Configure AWS OIDC authentication
+    - mkdir -p ~/.aws
+    - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
+    - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
+    - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
+    - export AWS_ROLE_SESSION_NAME="GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+    
+    # Validate assumed identity
+    - aws sts get-caller-identity
+    
+    # ECR Login and Image Build
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+    - docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA app/
+    
+    # Security Scan using Trivy
+    - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
+    
+    # Push artifacts to ECR
+    - docker push $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
+    - docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
+    - docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+deploy_ecs:
+  stage: deploy
+  image: alpine:latest
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  script:
+    - apk add --no-cache aws-cli
+    - echo "Deploying to AWS ECS..."
+    - mkdir -p ~/.aws
+    - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
+    - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
+    - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
+    - export AWS_ROLE_SESSION_NAME="GitLabRunner-Deploy-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+    - aws sts get-caller-identity
+    - aws ecs update-service --region $AWS_DEFAULT_REGION --cluster api-prod-cluster --service api-prod-service --force-new-deployment
+
+deploy_k8s:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Deploying to Kubernetes in VPS..."
+    - kubectl apply -f k8s/deployment.yaml
+    - kubectl rollout restart deployment/api-backend-deployment
+
+telegram_notify_success:
+  stage: notify
+  image: alpine/curl
+  script:
+    - curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="✅ *Pipeline DevSecOps Exitoso!* 🚀%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0A*Etapas completadas:*%0A🔐 SAST (Bandit) - Pasó%0A🧪 Testing (Pytest) - Pasó%0A🛡️ SCA Scan (Trivy) - Pasó%0A📦 Docker Build & Push a ECR - Pasó%0A☁️ Deploy en AWS ECS - Pasó%0A☸️ Deploy en Kubernetes (VPS) - Pasó%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown
+  when: on_success
+
+telegram_notify_failure:
+  stage: notify
+  image: alpine/curl
+  script:
+    - curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="❌ *Pipeline DevSecOps Fallido* 🚨%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0ARevisa los logs en GitLab para identificar en qué etapa (SAST, Tests, SCA o Deploy) ocurrió el error.%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown
+  when: on_failure
+

@@ -81,7 +81,9 @@ deploy_ecs:
 
 deploy_k8s:
   stage: deploy
-  image: bitnami/kubectl:latest
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
   script:
     - echo "Deploying to Kubernetes in VPS..."
     - kubectl apply -f k8s/deployment.yaml

@@ -49,34 +49,30 @@ pytest:
 build_scan_push:
   stage: build_and_scan
   image: docker:24.0.5
-  id_tokens:
-    GITLAB_OIDC_TOKEN:
-      aud: https://gitlab.com
   script:
-    - apk add --no-cache aws-cli jq curl
-    - echo "Configurando OIDC para AWS..."
-    # Configure AWS OIDC authentication
-    - mkdir -p ~/.aws
-    - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
-    - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
-    - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
-    - export AWS_ROLE_SESSION_NAME="GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+    - apk add --no-cache curl
     
-    # Validate assumed identity
-    - aws sts get-caller-identity
-    
-    # ECR Login and Image Build
-    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-    - docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA app/
+    # Image Build (Local for LAB)
+    - docker build -t local-api-backend:$CI_COMMIT_SHA app/
     
     # Security Scan using Trivy
     - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-    - trivy image --exit-code 0 --severity HIGH,CRITICAL $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL local-api-backend:$CI_COMMIT_SHA
     
-    # Push artifacts to ECR
-    - docker push $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
-    - docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
-    - docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+    # (Comentado para el LAB) ECR Login and Push
+    # - apk add --no-cache aws-cli jq
+    # - mkdir -p ~/.aws
+    # - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
+    # - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
+    # - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
+    # - export AWS_ROLE_SESSION_NAME="GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+    # - aws sts get-caller-identity
+    # - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+    # - docker tag local-api-backend:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
+    # - docker push $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
+    # - docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
+    # - docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
 
 # deploy_ecs:
 #   stage: deploy

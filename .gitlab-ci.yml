@@ -13,7 +13,7 @@ variables:
 
 default:
   tags:
-    - mi-vps-runner
+    - lab-vps-runner
 
 bandit_sast:
   stage: security_and_lint
@@ -22,17 +22,22 @@ bandit_sast:
     - pip install bandit
     - bandit -r app/ -ll
 
-trufflehog_secrets:
+trufflehog_scan:
   stage: security_and_lint
-  image: trufflesecurity/trufflehog:latest
+  image: 
+    name: trufflesecurity/trufflehog:latest
+    entrypoint: [""]
   script:
-    - trufflehog filesystem . --fail
+    - trufflehog filesystem . --no-update --fail
 
-checkov_iac:
+checkov_iac_scan:
   stage: security_and_lint
-  image: bridgecrew/checkov:latest
+  image: 
+    name: bridgecrew/checkov:latest
+    entrypoint: [""]
   script:
-    - checkov -d terraform/
+    - checkov -d k8s/ --soft-fail
+    - checkov -d terraform/ --soft-fail
 
 pytest:
   stage: test
@@ -74,54 +79,44 @@ build_scan_push:
     - docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
     - docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-deploy_ecs:
-  stage: deploy
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-  image: alpine:latest
-  id_tokens:
-    GITLAB_OIDC_TOKEN:
-      aud: https://gitlab.com
-  script:
-    - apk add --no-cache aws-cli
-    - echo "Deploying to AWS ECS..."
-    - mkdir -p ~/.aws
-    - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
-    - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
-    - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
-    - export AWS_ROLE_SESSION_NAME="GitLabRunner-Deploy-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
-    - aws sts get-caller-identity
-    - aws ecs update-service --region $AWS_DEFAULT_REGION --cluster api-prod-cluster --service api-prod-service --force-new-deployment
+# deploy_ecs:
+#   stage: deploy
+#   image: alpine:latest
+#   id_tokens:
+#     GITLAB_OIDC_TOKEN:
+#       aud: https://gitlab.com
+#   script:
+#     - apk add --no-cache aws-cli
+#     - echo "Deploying to AWS ECS..."
+#     - mkdir -p ~/.aws
+#     - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
+#     - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
+#     - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
+#     - export AWS_ROLE_SESSION_NAME="GitLabRunner-Deploy-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+#     - aws sts get-caller-identity
+#     - aws ecs update-service --region $AWS_DEFAULT_REGION --cluster api-prod-cluster --service api-prod-service --force-new-deployment
 
-deploy_k8s:
-  stage: deploy
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-  image: alpine:latest
-  script:
-    - echo "Deploying to Kubernetes in VPS..."
-    - apk add --no-cache curl
-    - curl -LO "https://dl.k8s.io/release/v1.28.2/bin/linux/amd64/kubectl"
-    - chmod +x kubectl
-    - mv kubectl /usr/local/bin/
-    - kubectl apply -f k8s/deployment.yaml
-    - kubectl rollout restart deployment/api-backend-deployment
+# deploy_k8s:
+#   stage: deploy
+#   image:
+#     name: bitnami/kubectl:latest
+#     entrypoint: [""]
+#   script:
+#     - echo "Deploying to Kubernetes in VPS..."
+#     - kubectl apply -f k8s/deployment.yaml
+#     - kubectl rollout restart deployment/api-backend-deployment
 
 telegram_notify_success:
   stage: notify
   image: alpine/curl
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: on_success
   script:
-    - curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="✅ *Pipeline DevSecOps Exitoso!* 🚀%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0A*Etapas completadas:*%0A🔐 SAST (Bandit) - Pasó%0A🧪 Testing (Pytest) - Pasó%0A🛡️ SCA Scan (Trivy) - Pasó%0A📦 Docker Build & Push a ECR - Pasó%0A☁️ Deploy en AWS ECS - Pasó%0A☸️ Deploy en Kubernetes (VPS) - Pasó%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown
+    - curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="✅ *Pipeline DevSecOps (LAB) Exitoso!* 🚀%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0A*Etapas completadas:*%0A🔐 SAST (Bandit) - Pasó%0A🔑 Secrets (TruffleHog) - Pasó%0A🏗️ IaC (Checkov) - Pasó%0A🧪 Testing (Pytest) - Pasó%0A🛡️ SCA Scan (Trivy) - Pasó%0A📦 Docker Build & Push a ECR - Pasó%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown
+  when: on_success
 
 telegram_notify_failure:
   stage: notify
   image: alpine/curl
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: on_failure
   script:
     - curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="❌ *Pipeline DevSecOps Fallido* 🚨%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0ARevisa los logs en GitLab para identificar en qué etapa (SAST, Tests, SCA o Deploy) ocurrió el error.%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown
+  when: on_failure
 

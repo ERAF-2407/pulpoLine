@@ -10,7 +10,10 @@ Este proyecto implementa una arquitectura segura y automatizada para una API lig
 * **Alta Disponibilidad y Punto de Entrada Estático (ALB)**: El servicio ECS Fargate ya no está expuesto directamente al público, sino que se sitúa tras un **Application Load Balancer (ALB)**. Esto proporciona un nombre de dominio estático (`api_alb_dns_name`) e implementa el patrón de red *Zero-Trust*, donde el clúster ECS solo acepta tráfico originado estrictamente desde el Load Balancer.
 * **Seguridad Identity-First (OIDC + IAM)**: Adopta un enfoque de *Zero-Trust*. En lugar de utilizar Access Keys de AWS de larga duración para el despliegue, se integró OpenID Connect (OIDC). GitLab CI asume temporalmente el rol `gitlab-ci-deploy-role` en AWS mediante un token JWT efímero.
 * **Gestión de Secretos en K8s**: En lugar de acoplar la renovación del token de AWS ECR a las ejecuciones de Terraform (lo cual no es ideal para un entorno *enterprise* de producción), se ha diseñado e implementado un **CronJob nativo en Kubernetes**. Este CronJob asume credenciales de solo lectura e interactúa automáticamente con el API de AWS para rotar el token de descarga de imágenes (`ecr-registry-secret`) de forma autónoma.
+* **GitOps con ArgoCD**: Se incorporó ArgoCD, gestionado mediante Terraform y el proveedor de Helm, para automatizar el despliegue de las aplicaciones en Kubernetes. La infraestructura de despliegue ahora obedece al estado definido en Git, separando la lógica de Construcción/Integración (GitLab CI) de la lógica de Despliegue Continuo (ArgoCD).
 * **Pipeline DevSecOps (`.gitlab-ci.yml`)**: El ciclo de integración continua incluye múltiples etapas de seguridad integradas:
+    * **Secrets Scanning**: Detección de credenciales y secretos filtrados con `TruffleHog`.
+    * **IaC Scanning**: Análisis de configuración de Infraestructura como Código (Terraform y Kubernetes) con `Checkov`.
     * **SAST**: Análisis estático de código Python con `Bandit`.
     * **Unit Testing**: Ejecución automatizada de pruebas con `pytest`.
     * **Build & AWS Auth**: Autenticación segura mediante OIDC y construcción optimizada de la imagen de Docker.
@@ -30,6 +33,8 @@ sequenceDiagram
 
     Dev->>GL: Push Code (Commit)
     Note over GL: Stage: security_and_lint
+    GL->>GL: TruffleHog (Secrets Scan)
+    GL->>GL: Checkov (IaC Scan)
     GL->>GL: Bandit (SAST Scan)
     Note over GL: Stage: test
     GL->>GL: Pytest (Unit Tests)
@@ -61,15 +66,16 @@ sequenceDiagram
 │   ├── deployment.yaml
 │   ├── install_monitoring.sh
 │   └── monitoring-values.yaml
-├── terraform/        # IaC para aprovisionar AWS
+├── terraform/        # IaC para aprovisionar AWS y Kubernetes
 │   ├── alb.tf        # Application Load Balancer y Target Groups
+│   ├── argocd.tf     # Despliegue de ArgoCD vía Helm para GitOps
 │   ├── ecr.tf        # Repositorios Elastic Container Registry
 │   ├── ecs.tf        # Clúster ECS
 │   ├── ecr_iam.tf    # IAM User y credenciales para el CronJob de ECR
 │   ├── grafana_iam.tf# IAM User para DataSource de CloudWatch
 │   ├── k8s.tf        # Infraestructura EKS/K3s y CronJobs
 │   ├── oidc.tf       # Proveedor OIDC y Trust Policies IAM para GitLab
-│   ├── providers.tf  # Configuración de proveedores (AWS)
+│   ├── providers.tf  # Configuración de proveedores (AWS, Kubernetes, Helm)
 │   └── rds.tf        # Base de datos RDS PostgreSQL
 └── README.md         # Documentación del proyecto
 ```
@@ -81,7 +87,7 @@ sequenceDiagram
 
 ## Preparación para Entrevista (Key Talking Points)
 
-Si presentas este proyecto en una entrevista técnica para **DevSecOps Engineer** o **Cloud Security Engineer**, enfócate en estos 4 pilares clave que demuestran madurez profesional:
+Enfoque de 5 pilares claves:
 
 1. **Gestión Dinámica de Secretos (OIDC Identity-First)**: 
    *"Como buena práctica de DevSecOps, eliminamos completamente las credenciales estáticas de AWS en nuestro entorno de CI/CD. Implementamos OpenID Connect (OIDC) creando un Identity Provider en AWS que confía criptográficamente en el emisor de GitLab. Ajustamos la política de confianza (Trust Policy) para que la asunción del rol IAM sea estrictamente condicional al ID de nuestro proyecto de GitLab (`project_path:ERAF-2407/pulpoline:*`). Esto erradica el riesgo asociado a la rotación manual y el compromiso de claves de acceso."*
@@ -95,7 +101,7 @@ Si presentas este proyecto en una entrevista técnica para **DevSecOps Engineer*
 4. **Infraestructura Definida por Software (IaC)**:
    *"Toda la arquitectura, desde el registro ECR hasta los roles IAM hiper-restringidos, está completamente codificada en Terraform. Esto asegura la trazabilidad, replicabilidad y la capacidad de revisar cambios de infraestructura mediante Pull/Merge Requests, evitando las configuraciones manuales o derivas (configuration drift) en AWS."*
 
-4. **Observabilidad Continua (Feedback Loop)**:
+5. **Observabilidad Continua (Feedback Loop)**:
    *"Garantizar un ciclo de vida ágil implica tener un feedback inmediato. Por ello, el pipeline notifica automáticamente el éxito o el fracaso del proceso, junto al SHA del commit correspondiente, a un canal de Telegram. Esto facilita al equipo reaccionar rápidamente ante vulnerabilidades bloqueantes o despliegues fallidos."*
 
 ## Monitoreo y Observabilidad (Grafana + Prometheus + CloudWatch)

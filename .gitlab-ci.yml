@@ -49,57 +49,70 @@ pytest:
 build_scan_push:
   stage: build_and_scan
   image: docker:24.0.5
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
   script:
     - apk add --no-cache curl
     
-    # Image Build (Local for LAB)
+    # Image Build
     - docker build -t local-api-backend:$CI_COMMIT_SHA app/
     
     # Security Scan using Trivy
     - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
     - trivy image --exit-code 0 --severity HIGH,CRITICAL local-api-backend:$CI_COMMIT_SHA
     
-    # (Comentado para el LAB) ECR Login and Push
-    # - apk add --no-cache aws-cli jq
-    # - mkdir -p ~/.aws
-    # - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
-    # - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
-    # - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
-    # - export AWS_ROLE_SESSION_NAME="GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
-    # - aws sts get-caller-identity
-    # - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-    # - docker tag local-api-backend:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
-    # - docker push $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
-    # - docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
-    # - docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+    # Push solo si estamos en la rama por defecto (main)
+    - |
+      if [ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]; then
+        echo "🚀 Rama principal detectada. Preparando subida a AWS ECR..."
+        apk add --no-cache aws-cli jq
+        mkdir -p ~/.aws
+        echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
+        export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
+        export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
+        export AWS_ROLE_SESSION_NAME="GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+        aws sts get-caller-identity
+        aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+        docker tag local-api-backend:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+      else
+        echo "🧪 Rama de feature detectada ($CI_COMMIT_BRANCH). Omitiendo push a AWS ECR."
+      fi
 
 
-# deploy_ecs:
-#   stage: deploy
-#   image: alpine:latest
-#   id_tokens:
-#     GITLAB_OIDC_TOKEN:
-#       aud: https://gitlab.com
-#   script:
-#     - apk add --no-cache aws-cli
-#     - echo "Deploying to AWS ECS..."
-#     - mkdir -p ~/.aws
-#     - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
-#     - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
-#     - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
-#     - export AWS_ROLE_SESSION_NAME="GitLabRunner-Deploy-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
-#     - aws sts get-caller-identity
-#     - aws ecs update-service --region $AWS_DEFAULT_REGION --cluster api-prod-cluster --service api-prod-service --force-new-deployment
+deploy_ecs:
+  stage: deploy
+  image: alpine:latest
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - apk add --no-cache aws-cli
+    - echo "Deploying to AWS ECS..."
+    - mkdir -p ~/.aws
+    - echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
+    - export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web_identity_token"
+    - export AWS_ROLE_ARN="${AWS_ROLE_ARN}"
+    - export AWS_ROLE_SESSION_NAME="GitLabRunner-Deploy-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+    - aws sts get-caller-identity
+    - aws ecs update-service --region $AWS_DEFAULT_REGION --cluster api-prod-cluster --service api-prod-service --force-new-deployment
 
-# deploy_k8s:
-#   stage: deploy
-#   image:
-#     name: bitnami/kubectl:latest
-#     entrypoint: [""]
-#   script:
-#     - echo "Deploying to Kubernetes in VPS..."
-#     - kubectl apply -f k8s/deployment.yaml
-#     - kubectl rollout restart deployment/api-backend-deployment
+deploy_k8s:
+  stage: deploy
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - echo "Deploying to Kubernetes in VPS..."
+    - kubectl apply -f k8s/deployment.yaml
+    - kubectl rollout restart deployment/api-backend-deployment
 
 telegram_notify_success:
   stage: notify

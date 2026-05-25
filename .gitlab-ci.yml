@@ -42,8 +42,8 @@ trufflehog_scan:
     name: trufflesecurity/trufflehog:latest
     entrypoint: [""]
   script:
-    - echo "\.git/.*" > .trufflehog-exclude
-    - trufflehog filesystem . --exclude-paths=.trufflehog-exclude --no-update --fail
+    # Escaneamos el repositorio Git directamente (ignora los archivos de configuración locales como .git/config)
+    - trufflehog git file://. --no-update --fail
 
 checkov_iac_scan:
   stage: security_and_lint

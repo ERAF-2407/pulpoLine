@@ -10,14 +10,28 @@ variables:
   ECR_REGISTRY: 089659004332.dkr.ecr.us-east-1.amazonaws.com
   ECR_REPOSITORY: api-backend-prod
   AWS_ROLE_ARN: arn:aws:iam::089659004332:role/gitlab-ci-deploy-role
+  IS_PROD: "false" # Por defecto asumimos que es LAB
+
+# El "Switch" inteligente
+workflow:
+  rules:
+    - if: '$CI_PROJECT_NAME == "pulpoline"'
+      variables:
+        IS_PROD: "true"
+    - when: always
 
 default:
-  tags:
-    - lab-vps-runner
+  image: alpine:latest
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - .cache/pip
 
 bandit_sast:
   stage: security_and_lint
   image: python:3.11-slim
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   script:
     - pip install bandit
     - bandit -r app/ -ll
@@ -33,6 +47,8 @@ trufflehog_scan:
 checkov_iac_scan:
   stage: security_and_lint
   image: python:3.11-slim
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   script:
     - pip install "numpy<2" checkov
     - checkov -d k8s/ --soft-fail
@@ -41,6 +57,8 @@ checkov_iac_scan:
 pytest:
   stage: test
   image: python:3.11-slim
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   script:
     - cd app/
     - pip install -r requirements.txt pytest httpx
@@ -62,10 +80,10 @@ build_scan_push:
     - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
     - trivy image --exit-code 0 --severity HIGH,CRITICAL local-api-backend:$CI_COMMIT_SHA
     
-    # Push solo si estamos en la rama por defecto (main)
+    # Push solo si estamos en Producción Y en la rama por defecto
     - |
-      if [ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]; then
-        echo "🚀 Rama principal detectada. Preparando subida a AWS ECR..."
+      if [ "$IS_PROD" == "true" ] && [ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]; then
+        echo "🚀 Entorno PRODUCCIÓN detectado. Preparando subida a AWS ECR..."
         apk add --no-cache aws-cli jq
         mkdir -p ~/.aws
         echo "${GITLAB_OIDC_TOKEN}" > /tmp/web_identity_token
@@ -79,7 +97,7 @@ build_scan_push:
         docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$CI_COMMIT_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
       else
-        echo "🧪 Rama de feature detectada ($CI_COMMIT_BRANCH). Omitiendo push a AWS ECR."
+        echo "🧪 Entorno LAB o rama feature detectada. Omitiendo push a AWS ECR."
       fi
 
 
@@ -90,7 +108,7 @@ deploy_ecs:
     GITLAB_OIDC_TOKEN:
       aud: https://gitlab.com
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$IS_PROD == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - apk add --no-cache aws-cli
     - echo "Deploying to AWS ECS..."
@@ -108,7 +126,7 @@ deploy_k8s:
     name: bitnami/kubectl:latest
     entrypoint: [""]
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$IS_PROD == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - echo "Deploying to Kubernetes in VPS..."
     - kubectl apply -f k8s/deployment.yaml
@@ -118,7 +136,9 @@ telegram_notify_success:
   stage: notify
   image: alpine/curl
   script:
-    - 'RESPONSE=$(curl -s -w "\nHTTP Status: %{http_code}\n" -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="✅ *Pipeline DevSecOps (LAB) Exitoso!* 🚀%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0A*Etapas completadas:*%0A🔐 SAST (Bandit) - Pasó%0A🔑 Secrets (TruffleHog) - Pasó%0A🏗️ IaC (Checkov) - Pasó%0A🧪 Testing (Pytest) - Pasó%0A🛡️ SCA Scan (Trivy) - Pasó%0A📦 Docker Build & Push a ECR - Pasó%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown)'
+    - ENV_NAME="LAB"
+    - if [ "$IS_PROD" == "true" ]; then ENV_NAME="PROD"; fi
+    - 'RESPONSE=$(curl -s -w "\nHTTP Status: %{http_code}\n" -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="✅ *Pipeline DevSecOps ($ENV_NAME) Exitoso!* 🚀%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0A*Etapas completadas:*%0A🔐 SAST (Bandit) - Pasó%0A🔑 Secrets (TruffleHog) - Pasó%0A🏗️ IaC (Checkov) - Pasó%0A🧪 Testing (Pytest) - Pasó%0A🛡️ SCA Scan (Trivy) - Pasó%0A📦 Build & Config - Pasó%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown)'
     - echo "$RESPONSE"
   when: on_success
 
@@ -126,7 +146,9 @@ telegram_notify_failure:
   stage: notify
   image: alpine/curl
   script:
-    - 'RESPONSE=$(curl -s -w "\nHTTP Status: %{http_code}\n" -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="❌ *Pipeline DevSecOps (LAB) Fallido* 🚨%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0ARevisa los logs en GitLab para identificar en qué etapa (SAST, Secrets, IaC, Tests, SCA o Deploy) ocurrió el error.%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown)'
+    - ENV_NAME="LAB"
+    - if [ "$IS_PROD" == "true" ]; then ENV_NAME="PROD"; fi
+    - 'RESPONSE=$(curl -s -w "\nHTTP Status: %{http_code}\n" -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="❌ *Pipeline DevSecOps ($ENV_NAME) Fallido* 🚨%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0ARevisa los logs en GitLab para identificar el error.%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown)'
     - echo "$RESPONSE"
   when: on_failure
 

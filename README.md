@@ -11,15 +11,28 @@ Este proyecto implementa una arquitectura segura y automatizada para una API lig
 * **Seguridad Identity-First (OIDC + IAM)**: Adopta un enfoque de *Zero-Trust*. En lugar de utilizar Access Keys de AWS de larga duración para el despliegue, se integró OpenID Connect (OIDC). GitLab CI asume temporalmente el rol `gitlab-ci-deploy-role` en AWS mediante un token JWT efímero.
 * **Gestión de Secretos en K8s**: En lugar de acoplar la renovación del token de AWS ECR a las ejecuciones de Terraform (lo cual no es ideal para un entorno *enterprise* de producción), se ha diseñado e implementado un **CronJob nativo en Kubernetes**. Este CronJob asume credenciales de solo lectura e interactúa automáticamente con el API de AWS para rotar el token de descarga de imágenes (`ecr-registry-secret`) de forma autónoma.
 * **GitOps con ArgoCD**: Se incorporó ArgoCD, gestionado mediante Terraform y el proveedor de Helm, para automatizar el despliegue de las aplicaciones en Kubernetes. La infraestructura de despliegue ahora obedece al estado definido en Git, separando la lógica de Construcción/Integración (GitLab CI) de la lógica de Despliegue Continuo (ArgoCD).
-* **Pipeline DevSecOps (`.gitlab-ci.yml`)**: El ciclo de integración continua incluye múltiples etapas de seguridad integradas:
-    * **Secrets Scanning**: Detección de credenciales y secretos filtrados con `TruffleHog`.
-    * **IaC Scanning**: Análisis de configuración de Infraestructura como Código (Terraform y Kubernetes) con `Checkov`.
+* **Switch Inteligente de Entornos (LAB vs PROD)**: A través de `workflow:rules` el pipeline se adapta al repositorio donde corre. Si el proyecto es un entorno de pruebas (ej. `pulpoline-labs`), el pipeline restringe su ejecución evitando contactar con AWS y compilando todo de forma segura en runners locales (evitando errores de "AccessDenied" y protegiendo credenciales de Producción). Si el proyecto es de Producción, se habilita el despliegue integral.
+* **Pipeline DevSecOps (`.gitlab-ci.yml`)**: El ciclo de integración continua incluye múltiples etapas integradas:
+    * **Secrets Scanning**: Detección de credenciales filtradas con `TruffleHog`.
+    * **IaC Scanning**: Auditoría estática de Infraestructura como Código (Terraform y K8s) con `Checkov`.
     * **SAST**: Análisis estático de código Python con `Bandit`.
     * **Unit Testing**: Ejecución automatizada de pruebas con `pytest`.
-    * **Build & AWS Auth**: Autenticación segura mediante OIDC y construcción optimizada de la imagen de Docker.
-    * **SCA**: Análisis de vulnerabilidades del sistema operativo y dependencias en la imagen final utilizando `Trivy` (fallando el pipeline si se detectan vulnerabilidades `HIGH` o `CRITICAL`).
-    * **Deploy AWS ECS**: El pipeline dispara una actualización forzada (`force-new-deployment`) del servicio ECS en AWS para desplegar la nueva versión.
-    * **Push & Notificaciones**: Subida de la imagen a ECR y envío de notificaciones de estado en tiempo real vía Telegram.
+    * **Build & AWS Auth**: Autenticación segura mediante OIDC (solo en PROD) y construcción de la imagen de Docker con estrategias de caché (`.cache/pip`) para acelerar compilaciones.
+    * **SCA**: Análisis de vulnerabilidades con `Trivy`, fallando el pipeline si hay hallazgos `HIGH` o `CRITICAL`.
+    * **Deploy AWS ECS / K8s**: Actualización de la infraestructura y servicios.
+    * **Notificaciones Inteligentes**: Envío de estatus y logs dinámicos a Telegram diferenciando si el origen es `(LAB)` o `(PROD)`.
+
+## GitFlow y Flujo de Integración Continua
+
+Para garantizar la integridad y estabilidad del código, se ha establecido un flujo de trabajo (GitFlow) que aprovecha los entornos separados de LAB y Producción:
+
+1. **Desarrollo en Repositorio LAB (`pulpoline-labs`)**:
+   * Todo nuevo desarrollo, actualización de dependencias, o cambio en los manifiestos de infraestructura debe empujarse (Push) primero al repositorio de pruebas.
+   * El pipeline ejecutará de forma aislada las etapas de validación (Linting, Tests y escaneos de seguridad SAST/IaC/SCA). Como medida *Shift-Left*, este entorno **jamás** intentará contactar a la cuenta de AWS de Producción. Si alguna prueba falla, se corrige sin haber afectado recursos reales.
+
+2. **Pase a Producción (`pulpoline`)**:
+   * Una vez validado en LAB y tras comprobar que las notificaciones de éxito llegan a Telegram, el código finalizado se promueve (Merge/Push) a la rama `main` del repositorio oficial.
+   * Al ejecutarse en Producción, el "Switch Inteligente" detecta el nombre, y tras validar nuevamente el código, procede con el despliegue: la imagen Docker se sube al servicio ECR en AWS y se notifican las actualizaciones correspondientes al orquestador K8s (vía ArgoCD o kubectl) y a ECS.
 
 ## Diagrama de Flujo (DevSecOps Pipeline)
 
@@ -85,7 +98,7 @@ sequenceDiagram
 > **Nota Histórica / Contexto del Repositorio:**
 > Este proyecto fue concebido e implementado originalmente utilizando GitHub Actions (puedes verificar el código histórico en el branch principal: [GitHub - ERAF-2407/pulpoLine](https://github.com/ERAF-2407/pulpoLine/tree/main)). No obstante, debido a las recientes políticas de GitHub respecto a las validaciones de tarjetas de crédito para el uso del *Free Tier* de Actions (las cuales generaron bloqueos en la ejecución de los pipelines), se tomó la decisión técnica y ágil de migrar el flujo CI/CD completo hacia **GitLab CI**. Esta migración demuestra adaptabilidad frente a incidentes de plataforma y fluidez operando múltiples soluciones CI/CD del mercado.
 
-## Preparación para Entrevista (Key Talking Points)
+## Key Talking Points
 
 Enfoque de 5 pilares claves:
 

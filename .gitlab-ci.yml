@@ -32,10 +32,9 @@ trufflehog_scan:
 
 checkov_iac_scan:
   stage: security_and_lint
-  image: 
-    name: bridgecrew/checkov:latest
-    entrypoint: [""]
+  image: python:3.11-slim
   script:
+    - pip install "numpy<2" checkov
     - checkov -d k8s/ --soft-fail
     - checkov -d terraform/ --soft-fail
 
@@ -110,13 +109,16 @@ telegram_notify_success:
   stage: notify
   image: alpine/curl
   script:
-    - curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="✅ *Pipeline DevSecOps (LAB) Exitoso!* 🚀%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0A*Etapas completadas:*%0A🔐 SAST (Bandit) - Pasó%0A🔑 Secrets (TruffleHog) - Pasó%0A🏗️ IaC (Checkov) - Pasó%0A🧪 Testing (Pytest) - Pasó%0A🛡️ SCA Scan (Trivy) - Pasó%0A📦 Docker Build & Push a ECR - Pasó%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown
+    - 'RESPONSE=$(curl -s -w "\nHTTP Status: %{http_code}\n" -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="✅ *Pipeline DevSecOps (LAB) Exitoso!* 🚀%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0A*Etapas completadas:*%0A🔐 SAST (Bandit) - Pasó%0A🔑 Secrets (TruffleHog) - Pasó%0A🏗️ IaC (Checkov) - Pasó%0A🧪 Testing (Pytest) - Pasó%0A🛡️ SCA Scan (Trivy) - Pasó%0A📦 Docker Build & Push a ECR - Pasó%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown)'
+    - echo "$RESPONSE"
   when: on_success
 
 telegram_notify_failure:
   stage: notify
   image: alpine/curl
   script:
-    - curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="❌ *Pipeline DevSecOps Fallido* 🚨%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0ARevisa los logs en GitLab para identificar en qué etapa (SAST, Tests, SCA o Deploy) ocurrió el error.%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown
+    - 'RESPONSE=$(curl -s -w "\nHTTP Status: %{http_code}\n" -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage -d chat_id=${TELEGRAM_TO} -d text="❌ *Pipeline DevSecOps (LAB) Fallido* 🚨%0A%0A*Proyecto:* $CI_PROJECT_NAME%0A*Commit:* $CI_COMMIT_SHORT_SHA%0A*Rama:* $CI_COMMIT_REF_NAME%0A%0ARevisa los logs en GitLab para identificar en qué etapa (SAST, Secrets, IaC, Tests, SCA o Deploy) ocurrió el error.%0A%0A*Pipeline URL:* $CI_PIPELINE_URL" -d parse_mode=Markdown)'
+    - echo "$RESPONSE"
   when: on_failure
+
 

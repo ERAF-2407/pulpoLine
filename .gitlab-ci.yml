@@ -42,7 +42,8 @@ trufflehog_scan:
     name: trufflesecurity/trufflehog:latest
     entrypoint: [""]
   script:
-    - trufflehog filesystem . --no-update --fail
+    - echo "\.git/.*" > .trufflehog-exclude
+    - trufflehog filesystem . --exclude-paths=.trufflehog-exclude --no-update --fail
 
 checkov_iac_scan:
   stage: security_and_lint
